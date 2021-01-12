@@ -29,6 +29,7 @@
 #include "llvm/CodeGen/SchedulerRegistry.h"
 #include "llvm/CodeGen/TargetSubtargetInfo.h"
 #include "llvm/GenXIntrinsics/GenXSPIRVWriterAdaptor.h"
+#include "llvm/GenXIntrinsics/GenXIntrOpts.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/IRPrintingPasses.h"
 #include "llvm/IR/LegacyPassManager.h"
@@ -953,8 +954,17 @@ void EmitAssemblyHelper::EmitAssembly(BackendAction Action,
 
   // ESIMD extension always requires lowering of certain IR constructs, such as
   // ESIMD C++ intrinsics, as the last FE step.
-  if (LangOpts.SYCLIsDevice && LangOpts.SYCLExplicitSIMD)
+  if (LangOpts.SYCLIsDevice && LangOpts.SYCLExplicitSIMD) {
     PerModulePasses.add(createSYCLLowerESIMDPass());
+#if 0
+    // This may create too many issues with simdcf. I suppose, it's better to replame memcpy.
+    PerFunctionPasses.add(createPromoteMemoryToRegisterPass());
+    PerModulePasses.add(createInstructionCombiningPass());
+    PerModulePasses.add(createSROAPass());
+#endif
+    PerModulePasses.add(createSimpleLoopUnrollPass(0, true, true));
+    PerModulePasses.add(createISPCSimdCFLoweringPass());
+  }
 
   CreatePasses(PerModulePasses, PerFunctionPasses);
 

@@ -238,7 +238,16 @@ SYCL_EXTERNAL uint16_t __esimd_any(sycl::INTEL::gpu::vector_type_t<T, N> src);
 template <typename T, int N>
 SYCL_EXTERNAL uint16_t __esimd_all(sycl::INTEL::gpu::vector_type_t<T, N> src);
 
+template <typename T, int N>
+SYCL_EXTERNAL bool __esimd_simdcf_any(sycl::INTEL::gpu::vector_type_t<T, N> vals);
+
+
 #ifndef __SYCL_DEVICE_ONLY__
+
+template <typename T, int N>
+SYCL_EXTERNAL bool __esimd_simdcf_any(sycl::INTEL::gpu::vector_type_t<T, N> vals) {
+  throw cl::sycl::feature_not_supported();
+}
 
 // Implementations of ESIMD intrinsics for the SYCL host device
 template <typename T, int N, int M, int VStride, int Width, int Stride,
@@ -284,5 +293,6 @@ __esimd_wrregion(sycl::INTEL::gpu::vector_type_t<T, N> OldVal,
   }
   return Result;
 }
+
 
 #endif // __SYCL_DEVICE_ONLY__

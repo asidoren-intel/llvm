@@ -237,22 +237,35 @@ public:
 
 #undef DEF_RELOP
 
-#define DEF_LOGIC_OP(LOGIC_OP, OPASSIGN)                                       \
-  simd operator LOGIC_OP(const simd &RHS) const {                              \
+#define DEF_BITWISE_OP(BITWISE_OP, OPASSIGN)                                   \
+  simd operator BITWISE_OP(const simd &RHS) const {                            \
     static_assert(std::is_integral<Ty>(), "not integeral type");               \
-    auto V2 = data() LOGIC_OP RHS.data();                                      \
+    auto V2 = data() BITWISE_OP RHS.data();                                    \
     return simd(V2);                                                           \
   }                                                                            \
   simd &operator OPASSIGN(const simd &RHS) {                                   \
     static_assert(std::is_integral<Ty>(), "not integeral type");               \
-    auto V2 = data() LOGIC_OP RHS.data();                                      \
+    auto V2 = data() BITWISE_OP RHS.data();                                    \
     write(convert<vector_type>(V2));                                           \
     return *this;                                                              \
   }
 
-  DEF_LOGIC_OP(&, &=)
-  DEF_LOGIC_OP(|, |=)
-  DEF_LOGIC_OP(^, ^=)
+  DEF_BITWISE_OP(&, &=)
+  DEF_BITWISE_OP(|, |=)
+  DEF_BITWISE_OP(^, ^=)
+
+#undef DEF_BITWISE_OP
+
+#define DEF_LOGIC_OP(LOGIC_OP)                                                 \
+  simd operator LOGIC_OP(const simd &RHS) const {                              \
+    static_assert(std::is_integral<Ty>(), "not integeral type");               \
+    auto V2 = data() LOGIC_OP RHS.data();                                      \
+    return simd(convert<vector_type>(V2));                                     \
+  }
+
+  DEF_LOGIC_OP(&&)
+  DEF_LOGIC_OP(||)
+  //  DEF_LOGIC_OP(!, ^=)
 
 #undef DEF_LOGIC_OP
 
@@ -449,6 +462,241 @@ template <typename U, typename T, int n>
 ESIMD_INLINE simd<U, n> convert(simd<T, n> val) {
   return __builtin_convertvector(val.data(), vector_type_t<U, n>);
 }
+
+//------------
+// simd cf
+//------------
+
+// perfect forwarding
+
+// return issue
+
+// Chain issue. must be fixed. Otherwise it's not a if-else chain.
+// if (a > 1) else if (a > 10) != if (a > 1) if (a > 10)
+
+// constexpr
+
+// Done
+// in simd_if if conds.size == bodies.size -> it's the if-elif-elif. Otherwise,
+// it's if-elif-else
+
+namespace func {
+template <typename Head, typename... Tail>
+ESIMD_INLINE std::tuple<Tail...>
+tuple_tail(const std::tuple<Head, Tail...> &t) {
+  return std::apply(
+      [](auto head, auto... tail) { return std::make_tuple(tail...); }, t);
+}
+
+template <typename... Conditions, typename... Bodies>
+ESIMD_INLINE void simd_if_elif_else_impl(std::tuple<Conditions...> conds,
+                                         std::tuple<Bodies...> bodies) {
+
+  simd cond = std::get<0>(conds);
+  if (__esimd_simdcf_any<typename decltype(cond)::element_type, cond.length>(
+          cond)) {
+    std::get<0>(bodies)();
+    return;
+  }
+  simd_if_elif_else_impl(tuple_tail(conds), tuple_tail(bodies));
+}
+
+template <typename Body>
+ESIMD_INLINE void simd_if_elif_else_impl(std::tuple<> empty_conds,
+                                         std::tuple<Body> else_body) {
+  std::get<0>(else_body)();
+}
+
+template <>
+ESIMD_INLINE void simd_if_elif_else_impl(std::tuple<> empty_conds,
+                                         std::tuple<> empty_body) {}
+
+template <typename... Conditions, typename... Bodies>
+ESIMD_INLINE void simd_if(std::tuple<Conditions...> conds,
+                          std::tuple<Bodies...> bodies) {
+  simd_if_elif_else_impl(conds, bodies);
+}
+
+} // namespace func
+
+// std::optinal and void.
+
+namespace cls {
+
+template <typename T> static constexpr auto make_array(T &&t) {
+  constexpr auto array_from_tuple = [](auto &&...TupleArg) {
+    return std::array{std::forward<decltype(TupleArg)>(TupleArg)...};
+  };
+  return std::apply(array_from_tuple, std::forward<T>(t));
+}
+
+template <typename T, std::size_t... I>
+static constexpr auto to_tuple_impl(T &&a, std::index_sequence<I...>) {
+  return std::make_tuple(std::move(a[I])...);
+}
+
+template <typename T, std::size_t N>
+static constexpr auto to_tuple(std::array<T, N> &&a) {
+  return to_tuple_impl(std::forward<std::array<T, N>>(a),
+                       std::make_index_sequence<N>{});
+}
+
+// unrolled for replacement :(
+
+template<int N>
+struct my_algo {
+template<typename C, typename B>
+static std::optional<int> reverse_for_unroll(C &&CondFunc, B &&BlockFunc) {
+  static_assert(N > 0);
+  if (CondFunc(N))
+    return BlockFunc(N);
+  return{};
+//  my_algo<N-1>::reverse_for_unroll(std::forward<C>(CondFunc), std::forward<B>(BlockFunc));
+}
+};
+
+template<>
+struct my_algo<0> {
+template<typename C, typename B>
+static std::optional<int> reverse_for_unroll(C &&CondFunc, B &&BlockFunc) {
+  return {};
+}
+};
+
+// rule of zero.
+template <typename C, typename B, unsigned NC = 1, unsigned NB = 1>
+class simd_if final {
+  std::array<C, NC> Conditions;
+  // check that C is a simd<>
+  using CondEltTy = typename C::element_type;
+  static constexpr int CondLength = C::length;
+  std::array<B, NB> Blocks;
+
+public:
+  simd_if(C Condition, B Block)
+      : Conditions{Condition}, Blocks{Block} {
+    static_assert(NC == NB);
+    // If construction. There must be 1 condition and 1 body block.
+    static_assert(NC == 1);
+  }
+  // fix copying here.
+  simd_if(std::array<C, NC> &&Conds, std::array<B, NB> &&Blks)
+      : Conditions(Conds), Blocks(Blks) {
+    static_assert(NB > 1);
+    static_assert(NC == NB || NC == NB - 1);
+  }
+
+  constexpr std::optional<int> exec() {
+#if 0
+    auto RetVal = my_algo<NC>::reverse_for_unroll([&](int i) {
+      return __esimd_simdcf_any<CondEltTy, CondLength>(Conditions[NC - i]);}, [&](int i) { return Blocks[NC - i](); });
+    if (RetVal.has_value()) // has executed return in the loop
+      return RetVal;
+//    for (unsigned i = 0; i < Conditions.size(); ++i)
+//      if (__esimd_simdcf_any<CondEltTy, CondLength>(Conditions[i]))
+//        return Blocks[i]();
+    if constexpr (NC == NB)
+      return {};
+    else {
+      static_assert(NB > 1 && NC == NB - 1);
+      return Blocks.back()();
+    }
+
+#endif
+    std::optional<int> RetVal = {};
+#pragma nounroll // unroll conflicts with simd cf pass. Have to investigate. Actually, it may be not unroll itself, but the loop.
+    for (int i = 0; i < NC; ++i) {
+      if ( __esimd_simdcf_any<CondEltTy, CondLength>(Conditions[i])) {
+        RetVal = Blocks[i]();
+    }
+    }
+    if (RetVal.has_value())
+      return RetVal;
+
+    if constexpr (NC == NB)
+      return {};
+    else {
+      static_assert(NB > 1 && NC == NB - 1);
+      return Blocks.back()();
+    }
+
+#if 0
+    for (unsigned i = 0; i < Conditions.size(); ++i)
+      if (__esimd_simdcf_any<CondEltTy, CondLength>(Conditions[i]))
+        return Blocks[i]();
+    if constexpr (NC == NB)
+      return {};
+    else {
+      static_assert(NB > 1 && NC == NB - 1);
+      return Blocks.back()();
+    }
+#endif
+// Generated code is not ready for simd cf pass.
+#if 0
+    auto P = [](decltype(Conditions.front()) Cond) { return __esimd_simdcf_any<CondEltTy, CondLength>(Cond); };
+    auto TrueCond = std::find_if(Conditions.begin(), Conditions.end(), P);
+    if (TrueCond == Conditions.end()) { // else block or nothing
+      if constexpr (NC == NB)
+        return {};
+      else {
+        static_assert(NB > 1 && NC == NB - 1);
+        return Blocks.back()();
+      }
+    }
+    auto BlockPos = std::distance(Conditions.begin(), TrueCond);
+    assert(BlockPos < Blocks.size());
+    return Blocks[BlockPos]();
+#endif
+#if 0
+    if (__esimd_simdcf_any<CondEltTy, CondLength>(Conditions.front()))
+      return Blocks.front()();
+    return {};
+#endif
+  }
+
+  template <typename T, typename U,
+            std::enable_if_t<std::is_same_v<std::remove_reference_t<T>, C> &&
+                                 std::is_same_v<std::remove_reference_t<U>, B>,
+                             bool> = true>
+  simd_if<C, B, NC + 1, NB + 1> simd_elif(T &&Cond, U &&Block) {
+    static_assert(NC == NB); // cannot add elif after else
+    auto BlocksTup = to_tuple(std::move(Blocks));
+    auto NewBlocksTup = std::tuple_cat(std::move(BlocksTup),
+                                       std::make_tuple(std::forward<U>(Block)));
+    std::array<B, NB + 1> NewBlocks = make_array(std::move(NewBlocksTup));
+
+    auto ConditionsTup = to_tuple(std::move(Conditions));
+    auto NewConditionsTup = std::tuple_cat(
+        std::move(ConditionsTup), std::make_tuple(std::forward<T>(Cond)));
+    std::array<C, NC + 1> NewConditions =
+        make_array(std::move(NewConditionsTup));
+
+    return simd_if<C, B, NC + 1, NB + 1>(std::move(NewConditions),
+                                         std::move(NewBlocks));
+  }
+  template <typename U,
+            std::enable_if_t<std::is_same_v<std::remove_reference_t<U>, B>,
+                             bool> = true>
+  simd_if<C, B, NC, NB + 1> simd_else(U &&Block) {
+    static_assert(NB == NC); // prevent 2 else blocks.
+    // have to use 'to_tuple'. Otherwise, implementation dependent UB. See
+    // std::tuple_cat
+    auto BlocksTup = to_tuple(std::move(Blocks));
+    auto NewBlocksTup = std::tuple_cat(std::move(BlocksTup),
+                                       std::make_tuple(std::forward<U>(Block)));
+    std::array<B, NB + 1> NewBlocks = make_array(std::move(NewBlocksTup));
+    return simd_if<C, B, NC, NB + 1>(std::move(Conditions),
+                                     std::move(NewBlocks));
+  }
+#if 0 // type deduction is broken.
+  template<typename T, typename U> // forwarding references
+  static constexpr simd_if create(T &&Condition, U &&Block) {
+    return simd_if(std::forward<T>(Condition), std::forward<U>(Block));
+  }
+#endif
+};
+
+} // namespace cls
 
 } // namespace gpu
 } // namespace INTEL

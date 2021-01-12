@@ -243,6 +243,7 @@ public:
           nk(-1)}},
         {"vload", {"vload", {l(0)}}},
         {"vstore", {"vstore", {a(1), a(0)}}},
+        {"simdcf_any", {"simdcf.any", {ai1(0)}}},
 
         {"flat_block_read_unaligned", {"svm.block.ld.unaligned", {l(0)}}},
         {"flat_block_write", {"svm.block.st", {l(1)}}},
@@ -754,6 +755,146 @@ static void translateGetValue(CallInst &CI) {
   CI.replaceAllUsesWith(SI);
 }
 
+static void translateCF(CallInst &CI) {
+#if 0
+  auto Cond = CI.getArgOperand(0);
+  auto Ty = Cond->getType();
+  assert(isa<VectorType>(Ty));
+
+  IRBuilder<> Builder(&CI);
+  if (Builder.getInt1Ty() == Ty->getScalarType())
+    return;
+
+  Builder.CreateTrunc(Cond, Builder.getInt1Ty(), Cond->getName() + ".toi1");
+#endif
+
+
+}
+
+static void translateMemcpy(CallInst &CI) {
+  auto *MemCall = cast<MemCpyInst>(&CI);
+  unsigned ExpandLimit = 8 * 8 * 16;
+  bool doLinearExpand = !MemCall->isVolatile() && isa<ConstantInt>(MemCall->getLength()) && cast<ConstantInt>(MemCall->getLength())->getSExtValue() <= ExpandLimit;
+  assert(doLinearExpand);
+
+  IRBuilder<> IRB(MemCall);
+  llvm::Value *LenVal = MemCall->getLength();
+  assert(isa<Constant>(LenVal));
+  auto Len = (unsigned)cast<ConstantInt>(LenVal)->getZExtValue();
+  auto DstPtrV = MemCall->getRawDest();
+  assert(DstPtrV->getType()->isPointerTy());
+  auto I8Ty = cast<PointerType>(DstPtrV->getType())->getElementType();
+  assert(I8Ty->isIntegerTy(8));
+  auto VecTy = FixedVectorType::get(I8Ty, Len);
+  auto SrcAddr = MemCall->getRawSource();
+  unsigned srcAS = cast<PointerType>(SrcAddr->getType())->getAddressSpace();
+  auto LoadPtrV = IRB.CreateBitCast(SrcAddr, VecTy->getPointerTo(srcAS));
+  auto ReadIn = IRB.CreateLoad(LoadPtrV);
+  auto DstAddr = MemCall->getRawDest();
+  unsigned dstAS = cast<PointerType>(DstAddr->getType())->getAddressSpace();
+  auto StorePtrV = IRB.CreateBitCast(DstAddr, VecTy->getPointerTo(dstAS));
+  auto st = IRB.CreateStore(ReadIn, StorePtrV);
+  dbgs() << "replacement:\n\t" << *LoadPtrV << "\n\t" << *ReadIn << "\n\t" << *StorePtrV << "\n\t" << *st << "\n";
+}
+
+static bool memSetCanBeCoalesced(MemSetInst &MemSet, int CoalescedTySize) {
+  auto OrigLength = cast<ConstantInt>(MemSet.getLength())->getSExtValue();
+  assert(MemSet.getValue()->getType()->getScalarSizeInBits() ==
+                       8 &&
+                         "memset is expected to store by bytes");
+      assert(CoalescedTySize >= 1 && isPowerOf2_32(CoalescedTySize) &&
+                              "wrong argument: invalid CoalescedTySize");
+          return OrigLength % CoalescedTySize == 0 &&
+                     static_cast<int>(MemSet.getDestAlignment()) >= CoalescedTySize;
+}
+
+
+static void translateMemset(CallInst &CI) {
+  auto *MemSet = cast<MemSetInst>(&CI);
+
+  auto OrigLength = cast<ConstantInt>(MemSet->getLength())->getSExtValue();
+  Value *SetVal = MemSet->getValue();
+  Value *BaseAddr = MemSet->getRawDest();
+
+  int CoalescedTySize = 1;
+  if (memSetCanBeCoalesced(*MemSet, 8))
+    CoalescedTySize = 8;
+  else if (memSetCanBeCoalesced(*MemSet, 4))
+    CoalescedTySize = 4;
+  else if (memSetCanBeCoalesced(*MemSet, 2))
+    CoalescedTySize = 2;
+
+  auto Length = OrigLength / CoalescedTySize;
+
+  IRBuilder<> IRB{MemSet};
+  if (CoalescedTySize != 1) {
+        auto *PreNewSetVal = IRB.CreateVectorSplat(
+                  CoalescedTySize, SetVal, SetVal->getName() + ".pre.coalesce");
+          SetVal = IRB.CreateBitCast(PreNewSetVal, IRB.getIntNTy(8* CoalescedTySize),
+                                                    SetVal->getName() + ".coalesce");
+            auto DstAS = cast<PointerType>(BaseAddr->getType())->getAddressSpace();
+              BaseAddr =
+                      IRB.CreateBitCast(BaseAddr, IRB.getIntNTy(8*
+                            CoalescedTySize)->getPointerTo(DstAS),
+                                                  BaseAddr->getName() + ".align");
+  }
+
+  auto *VecTy = FixedVectorType::get(SetVal->getType(), Length);
+  Value *WriteOut = IRB.CreateVectorSplat(Length, SetVal);
+  auto DstAS = cast<PointerType>(BaseAddr->getType())->getAddressSpace();
+  auto *StoreVecPtr = IRB.CreateBitCast(BaseAddr, VecTy->getPointerTo(DstAS));
+  IRB.CreateStore(WriteOut, StoreVecPtr);
+
+
+#if 0
+//  unsigned ExpandLimit = 8 * 8 * 16;
+//  bool doLinearExpand = !MemCall->isVolatile() && isa<ConstantInt>(MemCall->getLength()) && cast<ConstantInt>(MemCall->getLength())->getSExtValue() <= ExpandLimit;
+//  assert(doLinearExpand);
+
+  IRBuilder<> IRB(MemCall);
+  llvm::Value *LenVal = MemCall->getLength();
+  assert(isa<Constant>(LenVal));
+  auto Len = (unsigned)cast<ConstantInt>(LenVal)->getZExtValue();
+  auto DstPtrV = MemCall->getRawDest();
+  assert(DstPtrV->getType()->isPointerTy());
+  auto I8Ty = cast<PointerType>(DstPtrV->getType())->getElementType();
+  assert(I8Ty->isIntegerTy(8));
+  auto VecTy = FixedVectorType::get(I8Ty, Len);
+  auto SrcAddr = MemCall->getRawSource();
+  unsigned srcAS = cast<PointerType>(SrcAddr->getType())->getAddressSpace();
+  auto LoadPtrV = IRB.CreateBitCast(SrcAddr, VecTy->getPointerTo(srcAS));
+  auto ReadIn = IRB.CreateLoad(LoadPtrV);
+  auto DstAddr = MemCall->getRawDest();
+  unsigned dstAS = cast<PointerType>(DstAddr->getType())->getAddressSpace();
+  auto StorePtrV = IRB.CreateBitCast(DstAddr, VecTy->getPointerTo(dstAS));
+  auto st = IRB.CreateStore(ReadIn, StorePtrV);
+  dbgs() << "replacement:\n\t" << *LoadPtrV << "\n\t" << *ReadIn << "\n\t" << *StorePtrV << "\n\t" << *st << "\n";
+
+
+  auto OrigLength = cast<ConstantInt>(MemSet.getLength())->getSExtValue();
+  Value &OrigSetVal = *MemSet.getValue();
+  Value &OrigBaseAddr = *MemSet.getRawDest();
+
+  // Because DWord is better than Byte and causes minimal problems.
+  // OWord can be better but but it requires more code.
+  constexpr int CoalescedTySize = genx::DWordBytes;
+  if (!memSetCanBeCoalesced(MemSet, CoalescedTySize))
+      return {OrigSetVal, OrigBaseAddr, OrigLength};
+
+  IRBuilder<> IRB{&MemSet};
+  auto *PreNewSetVal = IRB.CreateVectorSplat(
+            CoalescedTySize, &OrigSetVal, OrigSetVal.getName() + ".pre.coalesce");
+  auto *NewSetVal = IRB.CreateBitCast(PreNewSetVal, IRB.getInt32Ty(),
+                                            OrigSetVal.getName() + ".coalesce");
+  auto DstAS = cast<PointerType>(OrigBaseAddr.getType())->getAddressSpace();
+  auto *NewBaseAddr =
+        IRB.CreateBitCast(&OrigBaseAddr, IRB.getInt32Ty()->getPointerTo(DstAS),
+                                          OrigBaseAddr.getName() + ".align");
+  return {*NewSetVal, *NewBaseAddr, OrigLength / CoalescedTySize};
+#endif
+
+}
+
 // Newly created GenX intrinsic might have different return type than expected.
 // This helper function creates cast operation from GenX intrinsic return type
 // to currently expected. Returns pointer to created cast instruction if it
@@ -1229,10 +1370,12 @@ PreservedAnalyses SYCLLowerESIMDPass::run(Function &F,
                                           FunctionAnalysisManager &FAM,
                                           SmallPtrSet<Type *, 4> &GVTS) {
   // Only consider functions marked with !sycl_explicit_simd
-  if (F.getMetadata("sycl_explicit_simd") == nullptr)
+  if (F.getMetadata("sycl_explicit_simd") == nullptr) {
     return PreservedAnalyses::all();
+  }
 
   SmallVector<CallInst *, 32> ESIMDIntrCalls;
+  SmallVector<CallInst *, 32> ESIMDCF;
   SmallVector<Instruction *, 8> ESIMDToErases;
 
   for (Instruction &I : instructions(F)) {
@@ -1258,6 +1401,21 @@ PreservedAnalyses SYCLLowerESIMDPass::run(Function &F,
     }
 
     auto *CI = dyn_cast<CallInst>(&I);
+
+    if (CI && isa<MemCpyInst>(CI)) {
+      dbgs() << "translate MEMCPY: " << *CI << "\n";
+      translateMemcpy(*CI);
+      ESIMDToErases.push_back(CI);
+      continue;
+    }
+
+    if (CI && isa<MemSetInst>(CI)) {
+      dbgs() << "translate MEMCPY: " << *CI << "\n";
+      translateMemset(*CI);
+      ESIMDToErases.push_back(CI);
+      continue;
+    }
+
     Function *Callee = nullptr;
     if (!CI || !(Callee = CI->getCalledFunction()))
       continue;
@@ -1310,6 +1468,9 @@ PreservedAnalyses SYCLLowerESIMDPass::run(Function &F,
       ESIMDToErases.push_back(CI);
       continue;
     }
+    if(Name.startswith("__esimd_simdcf_any")) {
+      ESIMDCF.push_back(CI);
+    }
 
     if (Name.consume_front(SPIRV_INTRIN_PREF)) {
       translateSpirvIntrinsic(CI, Name, ESIMDToErases);
@@ -1322,6 +1483,9 @@ PreservedAnalyses SYCLLowerESIMDPass::run(Function &F,
     // this is ESIMD intrinsic - record for later translation
     ESIMDIntrCalls.push_back(CI);
   }
+
+  for (auto *CI : ESIMDCF)
+    translateCF(*CI);
   // Now demangle and translate found ESIMD intrinsic calls
   for (auto *CI : ESIMDIntrCalls) {
     translateESIMDIntrinsicCall(*CI);
