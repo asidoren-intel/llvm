@@ -721,6 +721,29 @@ public:
 #endif
 };
 #else
+
+class simd_control final {
+  enum class statement {
+    _no_statement,
+    _break,
+    _continue
+  };
+
+  statement s = statement::_no_statement;
+
+public:
+  simd_control() : s(statement::_no_statement) {}
+  simd_control(const simd_control &rhs) : s(rhs.s) {}
+  simd_control(simd_control &&rhs) : s(rhs.s) {}
+  // dirty operators
+  simd_control &operator=(const simd_control &rhs) { s = rhs.s; return *this; }
+  simd_control &operator=(simd_control &&rhs) { s = rhs.s; return *this; }
+  simd_control& simd_break() { s = statement::_break; return *this; }
+  simd_control& simd_continue() { s = statement::_continue; return *this; }
+  operator bool() const { return s != statement::_break; }
+};
+
+
 // rule of zero.
 template <typename C, unsigned NC, typename... Bs>
 class _simd_if final {
@@ -888,18 +911,16 @@ public:
   simd_if &operator=(simd_if &&) = delete;
 
 private:
-  void exec_impl() {
+  std::optional<bool> exec_impl() {
+    std::optional<bool> RetVal = {};
     if (__esimd_simdcf_any<CondEltTy, CondLength>(Conditions))
-      Blocks();
+      RetVal = Blocks();
+    return RetVal;
   }
 
 public:
-  std::optional<int> exec() {
-    std::optional<int> RetVal = {};
-    exec_impl();
-    return {};
-
-
+  std::optional<bool> exec() {
+    return exec_impl();
   }
 
   template <typename T, typename U,
@@ -917,6 +938,42 @@ public:
     return _simd_if<C, 1, B, U>(std::move(NewConditions), std::move(NewBlocks));
   }
 };
+
+template <typename C, typename B>
+class simd_while final {
+  C Conditions;
+  // check that C is a simd<>
+  using CondEltTy = typename decltype(Conditions())::element_type;
+  static constexpr int CondLength = decltype(Conditions())::length;
+  B Blocks;
+
+public:
+  // and for C
+  template<std::enable_if_t<std::is_invocable_v<B>, bool> = true>
+  simd_while(C Condition, B Block)
+      : Conditions{Condition}, Blocks{Block} {
+  }
+
+  simd_while(const simd_while &) = delete;
+  simd_while(simd_while &&) = delete;
+  simd_while &operator=(const simd_while &) = delete;
+  simd_while &operator=(simd_while &&) = delete;
+
+public:
+  void exec() {
+    if constexpr (std::is_same_v<decltype(Blocks()), void>) {
+      while (__esimd_simdcf_any<CondEltTy, CondLength>(Conditions()))
+        Blocks();
+    } else {
+      // only simd_control
+      simd_control control;
+      while (__esimd_simdcf_any<CondEltTy, CondLength>(Conditions()) && control)
+        control = Blocks();
+    }
+  }
+
+};
+
 
 #endif
 
