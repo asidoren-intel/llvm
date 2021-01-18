@@ -481,6 +481,7 @@ ESIMD_INLINE simd<U, n> convert(simd<T, n> val) {
 // it's if-elif-else
 
 namespace func {
+#if 0
 template <typename Head, typename... Tail>
 ESIMD_INLINE std::tuple<Tail...>
 tuple_tail(const std::tuple<Head, Tail...> &t) {
@@ -516,6 +517,40 @@ ESIMD_INLINE void simd_if(std::tuple<Conditions...> conds,
                           std::tuple<Bodies...> bodies) {
   simd_if_elif_else_impl(conds, bodies);
 }
+#else
+template <typename C, std::size_t N, unsigned I, typename... Bodies>
+ESIMD_INLINE void simd_if_elif_else_impl(std::array<C, N> conds,
+                                         std::tuple<Bodies...> bodies) {
+  static constexpr size_t NB = std::tuple_size<decltype(bodies)>::value;
+  if constexpr (I < N ) {
+    simd cond = conds[I];
+    if (__esimd_simdcf_any<typename decltype(cond)::element_type, cond.length>(
+            cond)) {
+      std::get<I>(bodies)();
+      return;
+    }
+    simd_if_elif_else_impl<C, N, I+1, Bodies...>(conds, bodies);
+  } else if constexpr (NB > N)
+    std::get<I>(bodies)();
+}
+
+template<bool...> struct bool_pack;
+
+template<bool... bs>
+using all_true = std::is_same<bool_pack<bs..., true>, bool_pack<true, bs...>>;
+
+template<typename... Args>
+using all_callable = all_true<std::is_invocable_v<Args>...>;
+
+template <typename C, std::size_t N, typename... Bodies, std::enable_if_t<all_callable<Bodies...>::value, bool> = true>
+ESIMD_INLINE void simd_if(std::array<C, N> conds,
+                          std::tuple<Bodies...> bodies) {
+  static constexpr size_t NB = std::tuple_size<decltype(bodies)>::value;
+  static_assert (N > 0);
+  static_assert (N == NB || N + 1 == NB);
+  simd_if_elif_else_impl<C, N, 0, Bodies...>(conds, bodies);
+}
+#endif
 
 } // namespace func
 
