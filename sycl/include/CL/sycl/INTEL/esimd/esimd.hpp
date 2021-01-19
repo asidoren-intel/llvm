@@ -945,17 +945,10 @@ public:
   simd_if &operator=(const simd_if &) = delete;
   simd_if &operator=(simd_if &&) = delete;
 
-private:
-  std::optional<bool> exec_impl() {
-    std::optional<bool> RetVal = {};
-    if (__esimd_simdcf_any<CondEltTy, CondLength>(Conditions))
-      RetVal = Blocks();
-    return RetVal;
-  }
-
 public:
-  std::optional<bool> exec() {
-    return exec_impl();
+  void exec() {
+    if (__esimd_simdcf_any<CondEltTy, CondLength>(Conditions))
+      Blocks();
   }
 
   template <typename T, typename U,
