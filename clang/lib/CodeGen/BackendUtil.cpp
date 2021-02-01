@@ -956,13 +956,11 @@ void EmitAssemblyHelper::EmitAssembly(BackendAction Action,
   // ESIMD C++ intrinsics, as the last FE step.
   if (LangOpts.SYCLIsDevice && LangOpts.SYCLExplicitSIMD) {
     PerModulePasses.add(createSYCLLowerESIMDPass());
-#if 0
     // This may create too many issues with simdcf. I suppose, it's better to replame memcpy.
     PerFunctionPasses.add(createPromoteMemoryToRegisterPass());
     PerModulePasses.add(createInstructionCombiningPass());
     PerModulePasses.add(createSROAPass());
-#endif
-    PerModulePasses.add(createSimpleLoopUnrollPass(0, true, true));
+//    PerModulePasses.add(createSimpleLoopUnrollPass(0, true, true));
     PerModulePasses.add(createISPCSimdCFLoweringPass());
   }
 

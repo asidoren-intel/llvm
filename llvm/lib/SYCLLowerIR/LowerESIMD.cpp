@@ -794,7 +794,7 @@ static void translateMemcpy(CallInst &CI) {
   unsigned dstAS = cast<PointerType>(DstAddr->getType())->getAddressSpace();
   auto StorePtrV = IRB.CreateBitCast(DstAddr, VecTy->getPointerTo(dstAS));
   auto st = IRB.CreateStore(ReadIn, StorePtrV);
-  dbgs() << "replacement:\n\t" << *LoadPtrV << "\n\t" << *ReadIn << "\n\t" << *StorePtrV << "\n\t" << *st << "\n";
+//  dbgs() << "replacement:\n\t" << *LoadPtrV << "\n\t" << *ReadIn << "\n\t" << *StorePtrV << "\n\t" << *st << "\n";
 }
 
 static bool memSetCanBeCoalesced(MemSetInst &MemSet, int CoalescedTySize) {
@@ -1403,14 +1403,16 @@ PreservedAnalyses SYCLLowerESIMDPass::run(Function &F,
     auto *CI = dyn_cast<CallInst>(&I);
 
     if (CI && isa<MemCpyInst>(CI)) {
-      dbgs() << "translate MEMCPY: " << *CI << "\n";
+//      dbgs() << "ESIMD lower wants to translate MEMCPY: " << *CI << "\n";
+      continue;
       translateMemcpy(*CI);
       ESIMDToErases.push_back(CI);
       continue;
     }
 
     if (CI && isa<MemSetInst>(CI)) {
-      dbgs() << "translate MEMCPY: " << *CI << "\n";
+//      dbgs() << "ESIMD lower wants to translate MEMCPY: " << *CI << "\n";
+      continue;
       translateMemset(*CI);
       ESIMDToErases.push_back(CI);
       continue;

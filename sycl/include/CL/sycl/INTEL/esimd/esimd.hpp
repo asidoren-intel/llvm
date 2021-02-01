@@ -265,7 +265,12 @@ public:
 
   DEF_LOGIC_OP(&&)
   DEF_LOGIC_OP(||)
-  //  DEF_LOGIC_OP(!, ^=)
+  simd operator! () const {
+    static_assert(std::is_integral<Ty>(), "not integeral type");
+    auto V = !data();
+    return simd(convert<vector_type>(V));
+
+  }
 
 #undef DEF_LOGIC_OP
 
@@ -779,6 +784,7 @@ public:
 };
 
 
+#ifdef EXEC_CALL
 // rule of zero.
 template <typename C, unsigned NC, typename... Bs>
 class _simd_if final {
@@ -966,6 +972,83 @@ public:
     return _simd_if<C, 1, B, U>(std::move(NewConditions), std::move(NewBlocks));
   }
 };
+#else // EXEC_CALL
+
+template <typename C, typename B>
+class _simd_if final {
+  C Conditions;
+  C PrevConditions;
+  // check that C is a simd<>
+  using CondEltTy = typename C::element_type;
+  static constexpr int CondLength = C::length;
+  B Blocks;
+
+public:
+  template<std::enable_if_t<std::is_invocable_v<B>, bool> = true>
+  _simd_if(C Condition, C PC, B Block)
+      : Conditions{Condition}, PrevConditions{PC}, Blocks{Block} {
+    if (__esimd_simdcf_any<CondEltTy, CondLength>(!PrevConditions && Conditions))
+      Blocks();
+  }
+
+  _simd_if(const _simd_if &) = delete;
+  _simd_if(_simd_if &&) = delete;
+  _simd_if &operator=(const _simd_if &) = delete;
+  _simd_if &operator=(_simd_if &&) = delete;
+
+public:
+  template <typename T, typename U,
+            std::enable_if_t<std::is_same_v<std::remove_reference_t<T>, C>, bool> = true>
+  _simd_if<C, U> simd_elif(T Cond, U Block) {
+    C NewPrevConditions = PrevConditions || Conditions;
+    return _simd_if<C, U>(Cond, NewPrevConditions, Block);
+  }
+  template <typename U>
+  _simd_if<C, U> simd_else(U Block) {
+    C NewConditions = simd<CondEltTy, CondLength>(1);
+    C NewPrevConditions = PrevConditions || Conditions;
+    return _simd_if<C, U>(NewConditions, NewPrevConditions, Block);
+  }
+};
+
+template <typename C, typename B>
+class simd_if final {
+  C Conditions;
+  C PrevConditions;
+  // check that C is a simd<>
+  using CondEltTy = typename C::element_type;
+  static constexpr int CondLength = C::length;
+  B Blocks;
+
+public:
+  template<std::enable_if_t<std::is_invocable_v<B>, bool> = true>
+  simd_if(C Condition, B Block)
+      : Conditions{Condition}, PrevConditions(simd<CondEltTy, CondLength>(0)), Blocks{Block} {
+    if (__esimd_simdcf_any<CondEltTy, CondLength>(!PrevConditions && Conditions))
+      Blocks();
+  }
+
+  simd_if(const simd_if &) = delete;
+  simd_if(simd_if &&) = delete;
+  simd_if &operator=(const simd_if &) = delete;
+  simd_if &operator=(simd_if &&) = delete;
+
+public:
+  template <typename T, typename U,
+            std::enable_if_t<std::is_same_v<std::remove_reference_t<T>, C>, bool> = true>
+  _simd_if<C, U> simd_elif(T Cond, U Block) {
+    C NewPrevConditions = PrevConditions || Conditions;
+    return _simd_if<C, U>(Cond, NewPrevConditions, Block);
+  }
+  template <typename U>
+  _simd_if<C, U> simd_else(U Block) {
+    C NewConditions = simd<CondEltTy, CondLength>(1);
+    C NewPrevConditions = PrevConditions || Conditions;
+    return _simd_if<C, U>(NewConditions, NewPrevConditions, Block);
+  }
+};
+#endif
+
 
 template <typename C, typename B>
 class simd_while final {
@@ -980,6 +1063,8 @@ public:
   template<std::enable_if_t<std::is_invocable_v<B>, bool> = true>
   simd_while(C Condition, B Block)
       : Conditions{Condition}, Blocks{Block} {
+    while (__esimd_simdcf_any<CondEltTy, CondLength>(Conditions()))
+      Blocks();
   }
 
   simd_while(const simd_while &) = delete;
@@ -989,19 +1074,49 @@ public:
 
 public:
   void exec() {
-    if constexpr (std::is_same_v<decltype(Blocks()), void>) {
-      while (__esimd_simdcf_any<CondEltTy, CondLength>(Conditions()))
-        Blocks();
+//    if constexpr (std::is_same_v<decltype(Blocks()), void>) {
+//      while (__esimd_simdcf_any<CondEltTy, CondLength>(Conditions()))
+//        Blocks();
+#if 0
     } else {
       // only simd_control
       simd_control control;
       while (__esimd_simdcf_any<CondEltTy, CondLength>(Conditions()) && control)
         control = Blocks();
     }
+#endif
   }
 
 };
 
+template <typename C, typename B>
+class simd_do_while final {
+  C Conditions;
+  // check that C is a simd<>
+  using CondEltTy = typename decltype(Conditions())::element_type;
+  static constexpr int CondLength = decltype(Conditions())::length;
+  B Blocks;
+
+public:
+  // and for C
+  template<std::enable_if_t<std::is_invocable_v<B>, bool> = true>
+  simd_do_while(C Condition, B Block)
+      : Conditions{Condition}, Blocks{Block} {
+  }
+
+  simd_do_while(const simd_do_while &) = delete;
+  simd_do_while(simd_do_while &&) = delete;
+  simd_do_while &operator=(const simd_do_while &) = delete;
+  simd_do_while &operator=(simd_do_while &&) = delete;
+
+public:
+  void exec() {
+      do {
+        Blocks();
+      } while (__esimd_simdcf_any<CondEltTy, CondLength>(Conditions()));
+  }
+
+};
 
 #endif
 
