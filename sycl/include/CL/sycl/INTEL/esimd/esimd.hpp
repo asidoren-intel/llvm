@@ -985,8 +985,8 @@ class _simd_if final {
 
 public:
   template<std::enable_if_t<std::is_invocable_v<B>, bool> = true>
-  _simd_if(C Condition, C PC, B Block)
-      : Conditions{Condition}, PrevConditions{PC}, Blocks{Block} {
+  _simd_if(C &&Condition, C &&PC, B &&Block)
+      : Conditions{std::forward<C>(Condition)}, PrevConditions{std::forward<C>(PC)}, Blocks{std::forward<B>(Block)} {
     if (__esimd_simdcf_any<CondEltTy, CondLength>(!PrevConditions && Conditions))
       Blocks();
   }
@@ -999,15 +999,15 @@ public:
 public:
   template <typename T, typename U,
             std::enable_if_t<std::is_same_v<std::remove_reference_t<T>, C>, bool> = true>
-  _simd_if<C, U> simd_elif(T Cond, U Block) {
+  _simd_if<C, U> simd_elif(T &&Cond, U &&Block) {
     C NewPrevConditions = PrevConditions || Conditions;
-    return _simd_if<C, U>(Cond, NewPrevConditions, Block);
+    return _simd_if<C, U>(std::forward<T>(Cond), std::move(NewPrevConditions), std::forward<U>(Block));
   }
   template <typename U>
-  _simd_if<C, U> simd_else(U Block) {
+  _simd_if<C, U> simd_else(U &&Block) {
     C NewConditions = simd<CondEltTy, CondLength>(1);
     C NewPrevConditions = PrevConditions || Conditions;
-    return _simd_if<C, U>(NewConditions, NewPrevConditions, Block);
+    return _simd_if<C, U>(std::move(NewConditions), std::move(NewPrevConditions), std::forward<U>(Block));
   }
 };
 
@@ -1022,8 +1022,8 @@ class simd_if final {
 
 public:
   template<std::enable_if_t<std::is_invocable_v<B>, bool> = true>
-  simd_if(C Condition, B Block)
-      : Conditions{Condition}, PrevConditions(simd<CondEltTy, CondLength>(0)), Blocks{Block} {
+  simd_if(C &&Condition, B &&Block)
+      : Conditions{std::forward<C>(Condition)}, PrevConditions(simd<CondEltTy, CondLength>(0)), Blocks{std::forward<B>(Block)} {
     if (__esimd_simdcf_any<CondEltTy, CondLength>(!PrevConditions && Conditions))
       Blocks();
   }
@@ -1036,20 +1036,30 @@ public:
 public:
   template <typename T, typename U,
             std::enable_if_t<std::is_same_v<std::remove_reference_t<T>, C>, bool> = true>
-  _simd_if<C, U> simd_elif(T Cond, U Block) {
+  _simd_if<C, U> simd_elif(T &&Cond, U &&Block) {
     C NewPrevConditions = PrevConditions || Conditions;
-    return _simd_if<C, U>(Cond, NewPrevConditions, Block);
+    return _simd_if<C, U>(std::forward<T>(Cond), std::move(NewPrevConditions), std::forward<U>(Block));
   }
   template <typename U>
-  _simd_if<C, U> simd_else(U Block) {
+  _simd_if<C, U> simd_else(U &&Block) {
     C NewConditions = simd<CondEltTy, CondLength>(1);
     C NewPrevConditions = PrevConditions || Conditions;
-    return _simd_if<C, U>(NewConditions, NewPrevConditions, Block);
+    return _simd_if<C, U>(std::move(NewConditions), std::move(NewPrevConditions), std::forward<U>(Block));
   }
 };
 #endif
 
 
+template<typename C, typename B, std::enable_if_t<std::is_invocable_v<B>, bool> = true>
+void simd_while(C &&Cond, B &&Block) {
+  using CondEltTy = typename decltype(Cond())::element_type;
+  static constexpr int CondLength = decltype(Cond())::length;
+
+  while (__esimd_simdcf_any<CondEltTy, CondLength>(Cond()))
+    Block();
+}
+
+#if 0
 template <typename C, typename B>
 class simd_while final {
   C Conditions;
@@ -1088,6 +1098,7 @@ public:
   }
 
 };
+#endif
 
 template <typename C, typename B>
 class simd_do_while final {
@@ -1099,7 +1110,7 @@ class simd_do_while final {
 
 public:
   // and for C
-  template<std::enable_if_t<std::is_invocable_v<B>, bool> = true>
+  template<std::enable_if_t<std::is_invocable_v<C> && std::is_invocable_v<B>, bool> = true>
   simd_do_while(C Condition, B Block)
       : Conditions{Condition}, Blocks{Block} {
   }
